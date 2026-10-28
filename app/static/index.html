@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kept — promises, proof, priority</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#EDF1EF;--card:#F9FBFA;--ink:#0F1E1A;--mute:#4B5D57;--line:#D0DAD6;--brand:#0A6E5A;--brand2:#D3EBE3;--warn:#B25E09;--warnbg:#FBEBD3;--bad:#B3261E;--badbg:#F9DEDC;--rail:#0F1E1A;--railink:#E6F0EC}
+@media (prefers-color-scheme:dark){:root{--bg:#0B1512;--card:#142320;--ink:#E6F0EC;--mute:#9AAFA7;--line:#253732;--brand:#42C6A2;--brand2:#18382F;--warn:#E5A843;--warnbg:#3A2C10;--bad:#F2A19A;--badbg:#3C1815;--rail:#08100D}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 'Instrument Sans',system-ui,sans-serif}
+h1,h2,h3{font-family:'Familjen Grotesk',system-ui,sans-serif;margin:0;font-weight:600;line-height:1.15}
+.app{display:grid;grid-template-columns:230px 1fr;min-height:100vh}
+nav{background:var(--rail);color:var(--railink);padding:20px 14px;position:sticky;top:0;height:100vh;display:flex;flex-direction:column;gap:4px}
+nav .brand{font:700 26px 'Familjen Grotesk';padding:0 10px 14px}nav .brand small{display:block;font:400 12px 'Instrument Sans';opacity:.7}
+nav a{color:inherit;text-decoration:none;padding:9px 12px;border-radius:8px;cursor:pointer;display:block}
+nav a.on,nav a:hover{background:rgba(255,255,255,.1)}
+nav .foot{margin-top:auto;font-size:12px;opacity:.75;padding:10px}
+main{padding:28px 32px 60px;max-width:1180px}
+.top{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;margin-bottom:20px;flex-wrap:wrap}
+.top p{margin:6px 0 0;color:var(--mute);max-width:720px}
+.grid{display:grid;gap:14px}.g4{grid-template-columns:repeat(auto-fit,minmax(210px,1fr))}.g2{grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px}
+.card h3{font-size:18px;margin-bottom:8px}.k{font:600 34px 'Familjen Grotesk';margin:2px 0}.lab{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--mute);font-weight:600}
+.sub{color:var(--mute);font-size:13px}
+table{border-collapse:collapse;width:100%;font-size:14px}th{text-align:left;color:var(--mute);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.05em}
+td,th{padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+.pill{display:inline-block;padding:2px 9px;border-radius:99px;font-size:12px;font-weight:600;background:var(--brand2);color:var(--brand)}
+.pill.warn{background:var(--warnbg);color:var(--warn)}.pill.bad{background:var(--badbg);color:var(--bad)}.pill.mute{background:var(--line);color:var(--mute)}
+button,select,input,textarea{font:inherit;color:inherit}
+button{background:var(--brand);color:#fff;border:0;border-radius:8px;padding:8px 14px;font-weight:600;cursor:pointer}
+@media (prefers-color-scheme:dark){button{color:#08100D}}
+button.ghost{background:transparent;color:var(--brand);border:1px solid var(--brand)}button:disabled{opacity:.5;cursor:wait}
+input,select,textarea{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:8px 10px;width:100%}
+label{display:block;font-size:13px;color:var(--mute);margin:8px 0 3px;font-weight:600}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}.row>*{flex:1;min-width:140px}.row>button{flex:0 0 auto}
+.bar{height:9px;background:var(--line);border-radius:6px;overflow:hidden}.bar i{display:block;height:100%;background:var(--brand)}.bar i.w{background:var(--warn)}.bar i.b{background:var(--bad)}
+.note{border-left:4px solid var(--warn);background:var(--warnbg);padding:10px 14px;border-radius:6px;font-size:13.5px;margin:12px 0}
+.ok{border-left-color:var(--brand);background:var(--brand2)}
+.res{margin-top:12px;padding:12px;border-radius:10px;background:var(--bg);border:1px dashed var(--line);white-space:pre-wrap}
+.mono{font:12px ui-monospace,Menlo,monospace;word-break:break-all}
+.tk{border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:10px;background:var(--card)}
+.toast{position:fixed;bottom:18px;right:18px;background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:10px;max-width:360px;z-index:9}
+@media(max-width:820px){.app{grid-template-columns:1fr}nav{position:static;height:auto;flex-direction:row;flex-wrap:wrap}nav .brand,nav .foot{display:none}main{padding:18px 16px}}
+</style>
+</head>
+<body>
+<div class="app">
+<nav id="nav">
+  <div class="brand">Kept<small>Promise · Proof · Priority</small></div>
+  <a data-v="overview">Overview</a><a data-v="promises">Promises</a><a data-v="desk">Service desk</a>
+  <a data-v="radar">Risk radar</a><a data-v="scorecard">Public scorecard</a><a data-v="customer">Customer</a><a data-v="data">Data &amp; AI</a>
+  <div class="foot" id="aistat"></div>
+</nav>
+<main id="main"></main>
+</div>
+<div id="toast" class="toast" hidden></div>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const R=n=>'R'+Number(n||0).toLocaleString('en-ZA',{maximumFractionDigits:0});
+const pc=(x,d=0)=>x==null?'n/a':(x*100).toFixed(d)+'%';
+let TOKEN='';try{TOKEN=localStorage.getItem('kept_token')||''}catch(e){}
+async function api(path,body){
+  const o={headers:{'Content-Type':'application/json'}};
+  if(TOKEN)o.headers['X-Kept-Token']=TOKEN;
+  if(body!==undefined){o.method='POST';o.body=JSON.stringify(body)}
+  let r=await fetch('/api'+path,o);
+  if(r.status===401){TOKEN=prompt('This server needs an access token:')||'';try{localStorage.setItem('kept_token',TOKEN)}catch(e){}return api(path,body)}
+  const j=await r.json();if(!r.ok)throw new Error(j.error||r.statusText);return j
+}
+function toast(m){const t=$('#toast');t.textContent=m;t.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(()=>t.hidden=true,4500)}
+const src=r=>r.source==='claude'?'<span class="pill">written by Claude</span>':'<span class="pill mute" title="'+esc(r.note)+'">rule-based fallback</span>';
+const busy=async(btn,fn)=>{btn.disabled=true;try{await fn()}catch(e){toast('Error: '+e.message)}finally{btn.disabled=false}};
+const head=(t,p)=>`<div class="top"><div><h1>${t}</h1><p>${p}</p></div></div>`;
+const synth='<div class="note"><b>Demo data is synthetic.</b> 700 invented customers, simulated over 12 months, replayed through the real rules engine. The effect of friction on lapsing is built into the generator, so these numbers show the system working, not proof it raises retention. Import your own CSV on the Data page.</div>';
+
+const V={};
+V.overview=async el=>{
+  const s=await api('/summary'),sc=s.scorecard,rt=s.retention,k=rt.groups.kept,h=rt.groups.holdout,d=rt.difference_discount_free,op=s.operations,m=s.radar.model;
+  const reg=Object.entries(s.regions).sort((a,b)=>a[1].kept_rate-b[1].kept_rate);
+  el.innerHTML=head('Overview','What the business promised, what it kept, and what that does to loyalty. Every number is computed from the ledger and the order data, live.')+synth+`
+  <div class="grid g4">
+   <div class="card"><div class="lab">Promises kept (90 days)</div><div class="k">${pc(sc.overall_kept_rate)}</div><div class="sub">${sc.judged.toLocaleString()} promises judged</div></div>
+   <div class="card"><div class="lab">Discount-free retention</div><div class="k">${pc(k.discount_free_retention)}</div><div class="sub">Kept group (n=${k.n}) vs ${pc(h.discount_free_retention)} holdout (n=${h.n})</div></div>
+   <div class="card"><div class="lab">Credits paid (90 days)</div><div class="k">${R(sc.credits_paid)}</div><div class="sub">${sc.credit_events_capped} stopped by the per-customer cap</div></div>
+   <div class="card"><div class="lab">Revenue at risk</div><div class="k">${R(s.radar.total_value_at_risk)}</div><div class="sub">${s.radar.scored} customers scored</div></div>
+  </div>
+  <div class="grid g2" style="margin-top:14px">
+   <div class="card"><h3>Promise record</h3><table><tr><th>Promise</th><th>Kept</th><th>Broken</th><th>Rate</th></tr>
+    ${sc.promises.map(p=>`<tr><td>${esc(p.promise)}</td><td>${p.kept}</td><td>${p.broken}</td><td><span class="pill ${p.kept_rate<.8?'bad':p.kept_rate<.9?'warn':''}">${pc(p.kept_rate)}</span></td></tr>`).join('')}</table>
+    <p class="sub">Ledger: ${sc.ledger.entries.toLocaleString()} entries, ${sc.ledger.ok?'<span class="pill">chain verified</span>':'<span class="pill bad">CHAIN BROKEN</span>'}</p></div>
+   <div class="card"><h3>Delivery promise by region</h3>${reg.map(([r,v])=>`<div style="margin:8px 0"><div style="display:flex;justify-content:space-between"><span>${esc(r)}</span><span class="sub">${pc(v.kept_rate)} of ${v.kept+v.broken}</span></div><div class="bar"><i class="${v.kept_rate<.5?'b':v.kept_rate<.8?'w':''}" style="width:${v.kept_rate*100}%"></i></div></div>`).join('')}
+    <p class="sub">A flat 3-day promise is kept in Gauteng and broken in the far regions. The Promises page quotes honest windows per region.</p></div>
+  </div>
+  <div class="grid g2" style="margin-top:14px">
+   <div class="card"><h3>Does Kept protect loyalty?</h3>
+    <p>Discount-free retention difference: <b>${d?(d.diff*100).toFixed(1)+' points':'n/a'}</b>${d?` (95% interval ${(d.low*100).toFixed(1)} to ${(d.high*100).toFixed(1)})`:''}</p>
+    <p class="sub">Customers retained only through coupons: kept ${k.coupon_bought}, holdout ${h.coupon_bought}. ${rt.small_sample?'<b>Holdout group is small (n&lt;100), so treat this as a direction, not a result.</b> ':''}A real pilot needs a larger holdout and 12 months.</p></div>
+   <div class="card"><h3>Is it worth the credits?</h3><p>Credits paid <b>${R(op.credits_cost_90d)}</b> vs gross margin on later orders by credited customers <b>${R(op.gross_margin_on_followup_orders)}</b> — <span class="pill ${op.decision_rule_passes?'':'warn'}">${op.decision_rule_passes?'passes the rule':'does not pass'}</span></p><p class="sub">${esc(op.decision_rule_note)}</p>
+    <p class="sub">Repeat-contact rate ${pc(op.repeat_contact_rate)} · average first reply ${op.avg_first_reply_hours??'n/a'} h</p></div>
+  </div>
+  <div class="card" style="margin-top:14px"><h3>Ask your data</h3><div class="row"><input id="q" value="Why are customers leaving, and what should I fix first?"><button id="askb">Ask</button></div><div id="ans"></div></div>`;
+  $('#askb').onclick=e=>busy(e.target,async()=>{const r=await api('/ask',{question:$('#q').value});$('#ans').innerHTML=`<div class="res">${esc(r.answer)}</div><p class="sub">${src(r)} · numbers are checked against your data before they are shown.</p>`})
+};
+
+V.promises=async el=>{
+  const p=await api('/promises'),c=p.config;
+  el.innerHTML=head('Promises','Set the promises the business will keep. Each rule change is written to the ledger. Credits are paid automatically and capped per customer.')+`
+  <div class="grid g2"><div class="card"><h3>Rules</h3>
+   <div class="row"><div><label>Delivery credit (% of order)</label><input id="c1" type="number" value="${c.delivery.credit_pct}"></div><div><label>Max per late order (R)</label><input id="c2" type="number" value="${c.delivery.max_credit}"></div></div>
+   <div class="row"><div><label>Reply within (hours)</label><input id="c3" type="number" step="0.5" value="${c.reply.hours}"></div><div><label>Late-reply credit (R)</label><input id="c4" type="number" value="${c.reply.credit}"></div></div>
+   <div class="row"><div><label>Cap per customer / 90 days (R)</label><input id="c5" type="number" value="${c.caps.per_customer_90d}"></div><div><label>Gross margin %</label><input id="c6" type="number" value="${c.margin_pct}"></div></div>
+   <label><input type="checkbox" id="e1" style="width:auto" ${c.delivery.enabled?'checked':''}> Delivery promise on</label>
+   <label><input type="checkbox" id="e2" style="width:auto" ${c.price.enabled?'checked':''}> All-in price promise on (any surprise charge is refunded in full)</label>
+   <label><input type="checkbox" id="e3" style="width:auto" ${c.reply.enabled?'checked':''}> Reply promise on</label>
+   <p><button id="save">Save rules to ledger</button></p></div>
+  <div class="card"><h3>Honest delivery window</h3><p class="sub">Quoted from this business's own delivery history per region, so the promise can be kept.</p>
+   <select id="reg">${p.regions.map(r=>`<option>${esc(r)}</option>`).join('')}</select><div id="eta"></div></div></div>
+  <div class="card" style="margin-top:14px"><h3>Try it live: place an order, then deliver it late</h3>
+   <p class="sub">This runs through the real engine and ledger. Use a customer id such as C1001 (kept group) or look one up under Customer.</p>
+   <div class="row"><div><label>Customer id</label><input id="o_c" value="C1001"></div><div><label>Order total (R)</label><input id="o_t" type="number" value="900"></div><div><label>Promised days (blank = recommended)</label><input id="o_d" type="number" step="0.5" placeholder="auto"></div><button id="o_go">1. Place order</button></div>
+   <div class="row"><div><label>Order id</label><input id="d_o" placeholder="from step 1"></div><div><label>Days it actually took</label><input id="d_days" type="number" step="0.5" value="6"></div><div><label>Final total charged (R)</label><input id="d_f" type="number" placeholder="same as quote"></div><button id="d_go">2. Deliver</button></div>
+   <div id="o_res"></div></div>`;
+  $('#save').onclick=e=>busy(e.target,async()=>{await api('/promises',{delivery:{enabled:$('#e1').checked,credit_pct:$('#c1').value,max_credit:$('#c2').value},price:{enabled:$('#e2').checked},reply:{enabled:$('#e3').checked,hours:$('#c3').value,credit:$('#c4').value},caps:{per_customer_90d:$('#c5').value},margin_pct:$('#c6').value});toast('Rules saved and logged on the ledger');loadEta()});
+  const loadEta=async()=>{const q=await api('/eta?region='+encodeURIComponent($('#reg').value));
+    $('#eta').innerHTML=!q.n?'<p>No delivery history yet.</p>':`<p><span class="k">${q.recommended_days} days</span><br><span class="sub">smallest promise kept ${pc(q.target)} of the time · based on ${q.n} deliveries ${q.enough_data?'':'<b>(too few to trust)</b>'}</span></p><p class="sub">Typical ${q.p50} days · 80% within ${q.p80} · 95% within ${q.p95}</p>
+    <table><tr><th>Promise</th><th>Kept</th><th>Expected credit / order</th></tr>${q.table.filter(t=>t.promise_days<=Math.max(5,q.recommended_days+1)).map(t=>`<tr ${t.promise_days===q.recommended_days?'style="font-weight:600"':''}><td>${t.promise_days} days</td><td>${pc(t.kept_rate)}</td><td>${R(t.expected_credit_per_order)}</td></tr>`).join('')}</table>`};
+  $('#reg').onchange=loadEta;loadEta();
+  $('#o_go').onclick=e=>busy(e.target,async()=>{const r=await api('/orders',{customer_id:$('#o_c').value,quoted_total:$('#o_t').value,promised_days:$('#o_d').value||null});$('#d_o').value=r.order_id;$('#o_res').innerHTML=`<div class="res">Order ${esc(r.order_id)} placed. Promised within ${r.promised_days} days.</div>`});
+  $('#d_go').onclick=e=>busy(e.target,async()=>{
+    const oid=$('#d_o').value.trim();if(!oid)throw new Error('place an order first');
+    const placed=await api('/customers/'+encodeURIComponent($('#o_c').value));const o=placed.orders.find(x=>x.id===oid);if(!o)throw new Error('order not found for that customer');
+    const when=new Date(new Date(o.placed_at+'Z').getTime()+Number($('#d_days').value)*864e5).toISOString().slice(0,19);
+    const r=await api('/orders/'+oid+'/deliver',{final_total:$('#d_f').value||null,delivered_at:when});
+    $('#o_res').innerHTML='<div class="res">'+(r.outcomes.length?r.outcomes.map(x=>`${x.promise}: ${x.kept?'KEPT':'BROKEN'}${x.credit?` — credit of ${R(x.credit)} issued automatically`:''}`).join('\n'):'Already judged.')+'\nWritten to the ledger.</div>'})
+};
+
+V.desk=async el=>{
+  const t=(await api('/tickets')).tickets;
+  const card=x=>`<div class="tk" id="t${x.id}"><div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap"><b>${esc(x.name)}</b> <span><span class="pill ${x.tier==='Priority'?'':'mute'}">${x.tier}</span> ${x.overdue?'<span class="pill bad">reply overdue</span>':x.replied?'<span class="pill mute">replied</span>':`<span class="pill warn">${x.hours_left} h left</span>`} ${x.category?`<span class="pill mute">${esc(x.category.replace('_',' '))}</span>`:''} ${x.urgency?`<span class="pill ${x.urgency==3?'bad':'mute'}">urgency ${x.urgency}</span>`:''}</span></div>
+  <p style="margin:6px 0">${esc(x.text)}</p>${x.root_cause?`<p class="sub">Root cause: ${esc(x.root_cause)}</p>`:''}
+  ${x.suggested_reply?`<div class="res">${esc(x.suggested_reply)}</div><p class="sub">${src({source:x.triage_source,note:''})}</p>`:''}
+  <div class="row" style="margin-top:8px"><button data-a="reply" data-id="${x.id}" ${x.replied?'disabled':''}>Mark replied</button><button class="ghost" data-a="triage" data-id="${x.id}">Re-triage with AI</button><button class="ghost" data-a="resolve" data-id="${x.id}">Resolve</button></div></div>`;
+  el.innerHTML=head('Service desk','Priority layer: unanswered and overdue tickets first, then the earned service tier (faster, more personal service — every customer keeps the same promises), then urgency. Claude triages new tickets.')+`
+  <div class="grid g2"><div class="card"><h3>New ticket</h3><label>Customer id</label><input id="n_c" value="C1001"><label>Message</label><textarea id="n_t" rows="4">I was told 3 days and it's day 6. Nobody replied to my first message. Where is my order?</textarea><p><button id="n_go">Create and triage</button></p><div id="n_res"></div></div>
+  <div class="card"><h3>How triage is protected</h3><p class="sub">Personal details are redacted before text leaves the server. The ticket is sent as untrusted data. The model can only choose from a fixed list of categories; links and invented amounts are rejected. It never issues credits — only the rules engine does. If the key is missing or the output fails checks, rule-based triage answers and says so.</p></div></div>
+  <h3 style="margin:18px 0 8px">Open queue (${t.length} shown)</h3>${t.map(card).join('')}`;
+  $('#n_go').onclick=e=>busy(e.target,async()=>{const r=await api('/tickets',{customer_id:$('#n_c').value,text:$('#n_t').value});toast('Ticket created and triaged');V.desk(el)});
+  el.querySelectorAll('[data-a]').forEach(b=>b.onclick=()=>busy(b,async()=>{const id=b.dataset.id,a=b.dataset.a;const r=await api(`/tickets/${id}/${a}`,{});if(a==='reply'&&r.outcomes.length)toast(r.outcomes.map(o=>`reply promise ${o.kept?'kept':'broken'}${o.credit?` — ${R(o.credit)} credit issued`:''}`).join(', '));V.desk(el)}))
+};
+
+V.radar=async el=>{
+  const r=await api('/radar?limit=25'),m=r.model,a=m.test_active,al=m.test_all;
+  el.innerHTML=head('Risk radar','Customers ranked by revenue at risk, with the signals behind each score and the next action. A person decides; customers never see a score.')+synth+`
+  <div class="card"><h3>How good is the model, honestly?</h3>
+   <p class="sub">Logistic regression trained in this app on the database's own history, scored with 5-fold cross-validation (every customer is scored by a model that never saw them). The test: does friction predict who stops buying better than "how long since they last bought"?</p>
+   <table><tr><th>Test group</th><th>n</th><th>Friction model AUC</th><th>Recency-only AUC</th><th>Top 20% lift (model / recency)</th></tr>
+   <tr><td>All customers</td><td>${al.n}</td><td>${al.auc_model}</td><td>${al.auc_recency_only}</td><td>${al.lift_model.lift} / ${al.lift_recency_only.lift}</td></tr>
+   ${a.auc_model?`<tr><td>Still looked healthy (bought in last 60 days)</td><td>${a.n}</td><td>${a.auc_model}</td><td>${a.auc_recency_only}</td><td>${a.lift_model.lift} / ${a.lift_recency_only.lift}</td></tr>`:''}</table>
+   <div class="note">${a.auc_model&&a.auc_model-a.auc_recency_only<0.03?'<b>Result on this data: friction signals add little over recency.</b> That is a real finding, not a bug: once credits repair friction, the old friction no longer predicts leaving. The radar\'s value here is the reasons and the next action, not a better forecast. A pilot would test this on real churn. ':''}${esc(m.note)}</div>
+   <p><button class="ghost" id="rt">Retrain on current data</button></p></div>
+  <h3 style="margin:18px 0 8px">Top ${r.customers.length} by revenue at risk</h3>
+  ${r.customers.map(c=>`<div class="tk"><div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px"><b>${esc(c.name)} <span class="sub">${c.customer_id}</span></b><span><span class="pill ${c.risk>.7?'bad':'warn'}">${pc(c.risk)} risk</span> <span class="pill mute">${c.tier}</span> <span class="pill mute">${R(c.value_at_risk)} at risk</span></span></div>
+   <p style="margin:6px 0" class="sub">${c.reasons.map(x=>esc(x.text)).join(' · ')||'No friction signals'}</p><p style="margin:4px 0"><b>Next action:</b> ${esc(c.action)}</p>
+   <button class="ghost" data-c="${c.customer_id}">Draft the message</button><div class="dr"></div></div>`).join('')}`;
+  $('#rt').onclick=e=>busy(e.target,async()=>{await api('/model/retrain',{});toast('Retrained');V.radar(el)});
+  el.querySelectorAll('[data-c]').forEach(b=>b.onclick=()=>busy(b,async()=>{const d=await api(`/radar/${b.dataset.c}/draft`,{});b.nextElementSibling.innerHTML=`<div class="res">${esc(d.message)}</div><p class="sub">${src(d)} · uses only verified facts: ${esc(JSON.stringify(d.facts))}</p>`}))
+};
+
+V.scorecard=async el=>{
+  const [s,l]=await Promise.all([api('/scorecard'),api('/ledger?limit=12')]);
+  el.innerHTML=head('Public scorecard','The page a customer could see next to the price. It is computed only from the ledger, so the business cannot edit its own record without breaking the chain.')+`
+  <div class="card" style="max-width:760px"><div class="lab">Last ${s.window_days} days · ${s.judged.toLocaleString()} promises judged</div><div class="k" style="font-size:54px">${pc(s.overall_kept_rate,1)}</div><div class="sub">of promises kept</div>
+  <table style="margin-top:12px"><tr><th>Promise</th><th>Kept</th><th>Rate</th></tr>${s.promises.map(p=>`<tr><td>${esc(p.promise)}</td><td>${p.kept} of ${p.total}</td><td><div class="bar"><i style="width:${p.kept_rate*100}%"></i></div> ${pc(p.kept_rate,1)}</td></tr>`).join('')}</table>
+  <p>Credits paid to customers automatically: <b>${R(s.credits_paid)}</b></p>
+  <p class="sub">Ledger head (publish this somewhere outside the business so anyone can check it):</p><p class="mono">${s.ledger.head}</p>
+  <p>${l.verify.ok?`<span class="pill">chain verified: ${l.verify.count.toLocaleString()} entries, none altered</span>`:`<span class="pill bad">chain broken at entry ${l.verify.broken_at}</span>`} <button class="ghost" id="vf">Verify again</button></p></div>
+  <div class="card" style="margin-top:14px"><h3>Latest ledger entries</h3><table><tr><th>#</th><th>Time</th><th>Event</th><th>Ref</th><th>Hash</th></tr>${l.entries.map(e=>`<tr><td>${e.seq}</td><td>${esc(e.ts)}</td><td>${esc(e.kind)}</td><td>${esc(e.ref)}</td><td class="mono">${e.hash.slice(0,12)}…</td></tr>`).join('')}</table></div>`;
+  $('#vf').onclick=e=>busy(e.target,async()=>{const v=await api('/ledger/verify');toast(v.ok?`Verified ${v.count} entries`:`BROKEN at entry ${v.broken_at}`)})
+};
+
+V.customer=async el=>{
+  el.innerHTML=head('Customer view','What a customer sees: their tier, what they have earned, their credits and a one-tap reorder.')+`<div class="card"><div class="row"><div><label>Search by id or name</label><input id="cs" value="C1001"></div><button id="cg">Open</button></div></div><div id="cd"></div>`;
+  const open=async()=>{let q=$('#cs').value.trim();let id=q;if(!/^C\d+$/.test(q)){const l=await api('/customers?q='+encodeURIComponent(q));if(!l.customers.length)throw new Error('no match');id=l.customers[0].id}
+    const d=await api('/customers/'+id),c=d.customer;
+    $('#cd').innerHTML=`<div class="grid g2" style="margin-top:14px"><div class="card"><h3>${esc(c.name)} <span class="sub">${c.id}</span></h3><p><span class="pill">${d.tier}</span> <span class="pill mute">${c.grp==='holdout'?'holdout (not covered by Kept)':'covered by Kept'}</span> <span class="pill mute">${esc(c.region)}</span></p>
+    <p>${d.orders_12m} orders in 12 months. ${d.next_tier?`${d.next_tier.orders_needed} more to reach <b>${d.next_tier.name}</b> (faster replies, named contact).`:'Top service tier.'}</p>
+    <p>Credits in last 90 days: <b>${R(d.credits_total_90d)}</b></p>${d.reorder_from?`<button disabled title="demo">Reorder order ${esc(d.reorder_from.id)} again (${R(d.reorder_from.quoted_total)})</button>`:''}</div>
+    <div class="card"><h3>Recent credits</h3>${d.credits.length?`<table><tr><th>When</th><th>Why</th><th>Amount</th></tr>${d.credits.map(x=>`<tr><td>${esc(x.ts.slice(0,10))}</td><td>${esc(x.promise)} promise broken</td><td>${R(x.amount)}</td></tr>`).join('')}</table>`:'<p class="sub">None. Promises were kept.</p>'}</div></div>
+    <div class="card" style="margin-top:14px"><h3>Orders</h3><table><tr><th>Order</th><th>Placed</th><th>Promised</th><th>Delivered</th><th>Total</th></tr>${d.orders.map(o=>`<tr><td>${o.id}</td><td>${o.placed_at.slice(0,10)}</td><td>${o.promised_at.slice(0,10)}</td><td>${o.delivered_at?o.delivered_at.slice(0,10)+(o.delivered_at>o.promised_at?' <span class="pill bad">late</span>':''):'<span class="pill warn">in transit</span>'}</td><td>${R(o.final_total??o.quoted_total)}</td></tr>`).join('')}</table></div>`};
+  $('#cg').onclick=e=>busy(e.target,open);open().catch(()=>{})
+};
+
+V.data=async el=>{
+  const [h,log]=await Promise.all([api('/health'),api('/ai/log')]);
+  const sampleO='order_id,customer_id,customer_name,region,placed_at,promised_at,quoted_total,final_total,delivered_at\nA1,Z1,Zodwa M,Gauteng,2026-09-01,2026-09-04,650,650,2026-09-03\nA2,Z2,Pieter K,Limpopo,2026-09-02,2026-09-05,1200,1320,2026-09-09';
+  el.innerHTML=head('Data &amp; AI','Bring your own orders and tickets as CSV, and see exactly what the AI did.')+`
+  <div class="grid g2"><div class="card"><h3>Import orders (CSV)</h3><p class="sub">Required: order_id, customer_id, placed_at, promised_at, quoted_total. Optional: customer_name, region, final_total, discount, delivered_at. Historic orders are judged and credits recorded.</p><textarea id="io" rows="6">${esc(sampleO)}</textarea><p><input type="file" id="fo" accept=".csv"> <button id="go1">Import orders</button></p><div id="r1"></div></div>
+  <div class="card"><h3>Import tickets (CSV)</h3><p class="sub">Required: customer_id, created_at, text. Optional: order_id, first_reply_at, resolved_at. Import orders first.</p><textarea id="it" rows="6">customer_id,created_at,text,first_reply_at\nZ2,2026-09-10,Hidden fee on my order and nobody answered,2026-09-12</textarea><p><input type="file" id="ft" accept=".csv"> <button id="go2">Import tickets</button></p><div id="r2"></div></div></div>
+  <div class="card" style="margin-top:14px"><h3>AI status</h3><p>Mode: <b>${esc(h.ai.mode)}</b>${h.ai.model?' · model '+esc(h.ai.model):''}</p><p class="sub">Set ANTHROPIC_API_KEY before starting the server to use Claude for ticket triage, recovery messages and "Ask your data". Without it, every feature still works with rule-based answers.</p>
+  <table><tr><th>When</th><th>Feature</th><th>Source</th><th>Note</th></tr>${log.log.map(x=>`<tr><td>${esc(x.ts.replace('T',' '))}</td><td>${esc(x.feature)}</td><td>${esc(x.source)}</td><td class="sub">${esc(x.note)}</td></tr>`).join('')||'<tr><td colspan=4 class="sub">No AI calls yet. Try the Service desk or Overview.</td></tr>'}</table></div>`;
+  const rd=(inp,ta)=>inp.onchange=()=>{const f=inp.files[0];if(f){const r=new FileReader();r.onload=()=>ta.value=r.result;r.readAsText(f)}};
+  rd($('#fo'),$('#io'));rd($('#ft'),$('#it'));
+  const imp=(btn,path,ta,out)=>btn.onclick=()=>busy(btn,async()=>{const r=await api(path,{csv:ta.value});out.innerHTML=`<div class="res">Imported ${r.imported}. Skipped ${r.skipped_count}.${r.skipped.map(s=>`\nrow ${s.row}: ${esc(s.error)}`).join('')}</div>`});
+  imp($('#go1'),'/import/orders',$('#io'),$('#r1'));imp($('#go2'),'/import/tickets',$('#it'),$('#r2'))
+};
+
+async function show(){
+  const v=(location.hash||'#overview').slice(1);const name=V[v]?v:'overview';
+  document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('on',a.dataset.v===name));
+  const el=$('#main');el.innerHTML='<p class="sub">Loading…</p>';
+  try{await V[name](el)}catch(e){el.innerHTML=`<div class="note"><b>Something went wrong:</b> ${esc(e.message)}</div>`}
+  api('/health').then(h=>$('#aistat').innerHTML=h.ai.configured?'AI: Claude on':'AI: fallback mode<br>(no API key)').catch(()=>{})
+}
+document.querySelectorAll('nav a').forEach(a=>a.onclick=()=>{location.hash=a.dataset.v});
+addEventListener('hashchange',show);show();
+</script>
+</body>
+</html>
