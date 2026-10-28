@@ -1,6 +1,6 @@
 # Kept
 
-A working MVP for the **Credify System Thinking Challenge 2026**, challenge area 03, Customer Loyalty:
+A working MVP for the Customer Loyalty Challenge:
 *How can businesses retain customers when competitors are only one click away?*
 
 Kept makes a business's reliability **checkable and rewarded**, so price is not the only thing a customer can compare.
@@ -76,8 +76,3 @@ To use your own data instead of the demo: `KEPT_DB=data/mine.db KEPT_NO_SEED=1 p
 
 ## Documentation
 Problem, stakeholders, root causes, interventions compared, evidence, feasibility, risks and sources are in the project documentation and pitch deck submitted with this repository.
-
-## Tools and AI assistance
-Built with Claude (Anthropic) in a chat session: research, system analysis, all code in this repository and the drafting of the documentation were produced with Claude and reviewed by the team. The runtime AI features call Claude when a key is configured. No third-party code or packages are used (Python standard library only); fonts load from Google Fonts.
-
-**Team contribution:** [add your name and what you personally decided, researched, built and tested]
