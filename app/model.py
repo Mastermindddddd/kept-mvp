@@ -26,6 +26,13 @@ FEATURES = [
 ]
 NAMES = [f[0] for f in FEATURES]
 LABEL = dict(FEATURES)
+# Counts are heavily right-skewed; the model sees log(1 + x) so one extreme customer cannot dominate the scaling.
+# Recency stays linear (log-recency tested worse). Reasons shown to staff still use the raw values.
+LOG_FEATURES = {"orders_180", "late_180", "price_surprise_180", "tickets_60", "open_tickets", "slow_reply_180"}
+
+
+def vector(f):
+    return [math.log1p(f[n]) if n in LOG_FEATURES else f[n] for n in NAMES]
 
 
 def load(conn):
@@ -76,15 +83,40 @@ def _sigmoid(z):
 
 
 def _auc(scores, labels):
-    pos = [s for s, y in zip(scores, labels) if y == 1]
-    neg = [s for s, y in zip(scores, labels) if y == 0]
-    if not pos or not neg:
+    """Mann-Whitney AUC from ranks (ties get their average rank): O(n log n) instead of comparing every pair."""
+    n_pos = sum(labels)
+    n_neg = len(labels) - n_pos
+    if not n_pos or not n_neg:
         return None
-    wins = 0.0
-    for p in pos:
-        for n in neg:
-            wins += 1.0 if p > n else 0.5 if p == n else 0.0
-    return wins / (len(pos) * len(neg))
+    order = sorted(range(len(scores)), key=lambda i: scores[i])
+    rank_sum, i = 0.0, 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and scores[order[j + 1]] == scores[order[i]]:
+            j += 1
+        avg = (i + j) / 2 + 1
+        rank_sum += sum(avg for k in range(i, j + 1) if labels[order[k]] == 1)
+        i = j + 1
+    return (rank_sum - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
+
+
+def _solve(A, b):
+    """Gaussian elimination with partial pivoting (A is small: one row per feature plus the intercept)."""
+    n = len(b)
+    M = [row[:] + [b[i]] for i, row in enumerate(A)]
+    for c in range(n):
+        p = max(range(c, n), key=lambda r: abs(M[r][c]))
+        M[c], M[p] = M[p], M[c]
+        if abs(M[c][c]) < 1e-12:
+            raise ValueError("singular system")
+        for r in range(c + 1, n):
+            f = M[r][c] / M[c][c]
+            for k in range(c, n + 1):
+                M[r][k] -= f * M[c][k]
+    x = [0.0] * n
+    for r in range(n - 1, -1, -1):
+        x[r] = (M[r][n] - sum(M[r][k] * x[k] for k in range(r + 1, n))) / M[r][r]
+    return x
 
 
 def _lift(scores, labels, frac=0.2):
@@ -100,12 +132,13 @@ def train(conn, now, seed=11):
     cfg = engine.get_config(conn)
     cust, orders, tickets = load(conn)
     T = add_days(now, -90)
-    X, y, ids = [], [], []
+    X, y, ids, recency = [], [], [], []
     for cid, os_ in orders.items():
         f = features(os_, tickets.get(cid, []), T, cfg["reply"]["hours"])
         if f is None:
             continue
-        X.append([f[n] for n in NAMES])
+        X.append(vector(f))
+        recency.append(f["recency_days"])
         y.append(0 if any(T < o["placed"] <= now for o in os_) else 1)   # 1 = no order in the next 90 days
         ids.append(cid)
     if len(X) < 60 or sum(y) < 10 or sum(y) > len(y) - 10:
@@ -113,21 +146,36 @@ def train(conn, now, seed=11):
     rnd = random.Random(seed)
 
     def fit(sel):
-        mean = [sum(X[i][j] for i in sel) / len(sel) for j in range(len(NAMES))]
-        std = [max(1e-9, math.sqrt(sum((X[i][j] - mean[j]) ** 2 for i in sel) / len(sel))) for j in range(len(NAMES))]
-        Z = {i: [(X[i][j] - mean[j]) / std[j] for j in range(len(NAMES))] for i in range(len(X))}
-        w, b = [0.0] * len(NAMES), 0.0
-        lr, l2, n = 0.3, 0.01, len(sel)
-        for _ in range(500):
-            gw, gb = [0.0] * len(w), 0.0
+        """L2-regularised logistic regression by Newton's method (IRLS). Converges to the exact optimum in a
+        handful of steps, where plain gradient descent needed hundreds of passes and stopped short of it."""
+        m = len(NAMES)
+        mean = [sum(X[i][j] for i in sel) / len(sel) for j in range(m)]
+        std = [max(1e-9, math.sqrt(sum((X[i][j] - mean[j]) ** 2 for i in sel) / len(sel))) for j in range(m)]
+        Z = {i: [(X[i][j] - mean[j]) / std[j] for j in range(m)] + [1.0] for i in range(len(X))}
+        beta, l2 = [0.0] * (m + 1), 0.01 * len(sel)        # same strength as the old mean-loss penalty of 0.01
+        for _ in range(25):
+            g = [0.0] * (m + 1)
+            H = [[0.0] * (m + 1) for _ in range(m + 1)]
             for i in sel:
-                e = _sigmoid(b + sum(w[j] * Z[i][j] for j in range(len(w)))) - y[i]
-                for j in range(len(w)):
-                    gw[j] += e * Z[i][j]
-                gb += e
-            w = [w[j] - lr * (gw[j] / n + l2 * w[j]) for j in range(len(w))]
-            b -= lr * gb / n
-        return w, b, mean, std, Z
+                z = Z[i]
+                p = _sigmoid(sum(beta[j] * z[j] for j in range(m + 1)))
+                e, w = p - y[i], max(p * (1 - p), 1e-9)
+                for j in range(m + 1):
+                    g[j] += e * z[j]
+                    wz = w * z[j]
+                    for k in range(j, m + 1):
+                        H[j][k] += wz * z[k]
+            for j in range(m):                          # penalise weights, never the intercept
+                g[j] += l2 * beta[j]
+                H[j][j] += l2
+            for j in range(m + 1):
+                for k in range(j):
+                    H[j][k] = H[k][j]
+            step = _solve(H, g)
+            beta = [beta[j] - step[j] for j in range(m + 1)]
+            if max(abs(x) for x in step) < 1e-6:
+                break
+        return beta[:m], beta[m], mean, std, {i: z[:m] for i, z in Z.items()}
 
     # 5-fold cross-validation: every customer is scored by a model that never saw them.
     idx = list(range(len(X)))
@@ -145,15 +193,16 @@ def train(conn, now, seed=11):
         if len(yy) < 30 or sum(yy) < 5 or sum(yy) > len(yy) - 5:
             return {"n": len(yy), "note": "too few examples to evaluate"}
         sc = [oof[i] for i in sel]
-        rec = [X[i][0] for i in sel]          # baseline: just "how long since they last bought"
+        rec = [recency[i] for i in sel]       # baseline: just "how long since they last bought"
         return {"n": len(yy), "churn_rate": round(sum(yy) / len(yy), 4), "auc_model": round(_auc(sc, yy), 4),
                 "auc_recency_only": round(_auc(rec, yy), 4), "lift_model": _lift(sc, yy), "lift_recency_only": _lift(rec, yy)}
     # The early-warning question: among customers who still LOOK healthy (bought in the last 60 days), who lapses?
-    active = [i for i in idx if X[i][0] <= 60]
+    active = [i for i in idx if recency[i] <= 60]
     w, b, mean, std, _ = fit(idx)               # final model uses everyone
     body = {
         "features": NAMES, "mean": mean, "std": std, "coef": w, "intercept": b,
         "trained_at": iso(now), "snapshot": iso(T), "n_train": len(idx), "n_test": len(idx), "method": "5-fold cross-validation",
+        "solver": "Newton (IRLS), L2 penalty", "transform": sorted(LOG_FEATURES),
         "churn_rate": round(sum(y) / len(y), 4),
         "test_all": evaluate(idx), "test_active": evaluate(active),
         "note": "Trained and tested on this database's own history (5-fold cross-validation). On the bundled synthetic data the "
@@ -193,12 +242,17 @@ ACTION = {
 }
 
 
+ACTIVE_ALWAYS = {"recency_days", "orders_180"}     # these explain risk at any value (long gap, few orders)
+
+
 def score_all(conn, now, limit=50):
     body = latest(conn)
     if not body:
         return {"model": None, "customers": [], "scored": 0, "total_value_at_risk": 0}
     cfg = engine.get_config(conn)
     cust, orders, tickets = load(conn)
+    tier = engine.tiers(conn, now)
+    xform = vector if body.get("transform") else (lambda f: [f[n] for n in NAMES])   # models saved before the log transform
     out = []
     for cid, os_ in orders.items():
         last = os_[-1]["placed"]
@@ -207,18 +261,20 @@ def score_all(conn, now, limit=50):
         f = features(os_, tickets.get(cid, []), now, cfg["reply"]["hours"])
         if f is None:
             continue
-        z = [(f[n] - body["mean"][j]) / body["std"][j] for j, n in enumerate(NAMES)]
+        z = [(v - body["mean"][j]) / body["std"][j] for j, v in enumerate(xform(f))]
         contrib = [(NAMES[j], body["coef"][j] * z[j]) for j in range(len(NAMES))]
         risk = _sigmoid(body["intercept"] + sum(c for _, c in contrib))
-        top = sorted([c for c in contrib if c[1] > 0.05], key=lambda c: -c[1])[:3]
+        # A friction signal is only a reason when it actually happened: a low value of a protective feature
+        # (e.g. "0% bought on discount") raises the score but is not something staff can act on.
+        top = sorted([c for c in contrib if c[1] > 0.05 and (c[0] in ACTIVE_ALWAYS or f[c[0]] > 0)], key=lambda c: -c[1])[:3]
         spend = sum(o["final"] if o["final"] is not None else o["quoted"] for o in os_ if days(o["placed"], now) <= 365)
         reasons = [{"feature": n, "label": LABEL[n], "text": REASON[n](f[n]), "weight": round(c, 3)} for n, c in top]
         action_key = next((n for n, _ in top if n != "recency_days"), top[0][0] if top else None)
         out.append({"customer_id": cid, "name": cust[cid]["name"], "grp": cust[cid]["grp"], "risk": round(risk, 4),
                     "annual_spend": round(spend, 2), "value_at_risk": round(risk * spend, 2),
-                    "tier": engine.tier_of(conn, cid, now), "days_since_order": int(days(last, now)),
+                    "tier": tier(cid), "days_since_order": int(days(last, now)),
                     "reasons": reasons, "action": ACTION.get(action_key, "Review the account.") if top else "No action needed."})
     out.sort(key=lambda r: -r["value_at_risk"])
     total_var = round(sum(r["value_at_risk"] for r in out), 2)
-    return {"model": {k: body[k] for k in ("trained_at", "n_train", "n_test", "test_all", "test_active", "note", "churn_rate")},
+    return {"model": {k: body.get(k) for k in ("trained_at", "n_train", "n_test", "test_all", "test_active", "note", "churn_rate", "solver")},
             "customers": out[:limit], "scored": len(out), "total_value_at_risk": total_var}

@@ -14,8 +14,16 @@ from .db import connect, iso, now as real_now
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 LOCK = threading.Lock()
 TOKEN = os.environ.get("KEPT_TOKEN", "")           # if set, every /api route except the public ones needs it
-PUBLIC = {"/api/scorecard", "/api/health"}
+PUBLIC = {"/api/scorecard", "/api/health", "/api/eta"}   # aggregates only; CORS-enabled so a shop page can embed them
 MAX_BODY = 2_000_000
+
+
+def _int(q, key, default, lo, hi):
+    """Integer query parameter, clamped to [lo, hi]."""
+    try:
+        return max(lo, min(hi, int(q.get(key, [default])[0])))
+    except ValueError:
+        raise ValueError(f"{key} must be a whole number")
 
 
 def _routes():
@@ -36,7 +44,10 @@ def _routes():
     def summary(conn, now, q, b): return service.summary(conn, now)
 
     @route("GET", "/api/scorecard")
-    def scorecard(conn, now, q, b): return engine.scorecard(conn, now, int(q.get("days", ["90"])[0]))
+    def scorecard(conn, now, q, b): return engine.scorecard(conn, now, _int(q, "days", 90, 1, 3650))
+
+    @route("GET", "/api/trend")
+    def trend(conn, now, q, b): return {"weeks": engine.trend(conn, now, _int(q, "weeks", 12, 2, 104))}
 
     @route("GET", "/api/promises")
     def promises_get(conn, now, q, b): return {"config": engine.get_config(conn), "regions": engine.regions(conn)}
@@ -52,7 +63,7 @@ def _routes():
 
     @route("POST", r"/api/orders/(?P<oid>[\w-]+)/deliver")
     def order_deliver(conn, now, q, b, oid):
-        return {"outcomes": service.deliver_order(conn, now, oid, b.get("final_total"), b.get("delivered_at"))}
+        return {"outcomes": service.deliver_order(conn, now, oid, b.get("final_total"), b.get("delivered_at"), b.get("after_days"))}
 
     @route("GET", "/api/tickets")
     def tickets(conn, now, q, b): return {"tickets": service.list_tickets(conn, now, q.get("status", ["open"])[0])}
@@ -70,7 +81,7 @@ def _routes():
     def ticket_resolve(conn, now, q, b, tid): return service.resolve_ticket(conn, now, int(tid))
 
     @route("GET", "/api/radar")
-    def radar(conn, now, q, b): return model.score_all(conn, now, int(q.get("limit", ["30"])[0]))
+    def radar(conn, now, q, b): return model.score_all(conn, now, _int(q, "limit", 30, 1, 500))
 
     @route("POST", r"/api/radar/(?P<cid>[\w-]+)/draft")
     def radar_draft(conn, now, q, b, cid): return service.draft_for_customer(conn, now, cid)
@@ -86,7 +97,7 @@ def _routes():
 
     @route("GET", "/api/ledger")
     def ledger_list(conn, now, q, b):
-        lim = min(200, int(q.get("limit", ["30"])[0]))
+        lim = _int(q, "limit", 30, 1, 200)
         rows = [dict(r) for r in conn.execute("SELECT seq,ts,kind,ref,payload,hash FROM ledger ORDER BY seq DESC LIMIT ?", (lim,))]
         return {"entries": rows, "verify": ledger.verify(conn)}
 
@@ -130,11 +141,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        if getattr(self, "public", False):
+            self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(data)
 
     def _handle(self, method):
         u = urlparse(self.path)
+        self.public = u.path in PUBLIC and method == "GET"
         if not u.path.startswith("/api/"):
             return self._static(u.path) if method == "GET" else self._send(405, {"error": "method not allowed"})
         if TOKEN and u.path not in PUBLIC and self.headers.get("X-Kept-Token") != TOKEN:

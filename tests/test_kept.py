@@ -138,6 +138,72 @@ class EngineTests(unittest.TestCase):
         self.assertTrue(q["enough_data"])
         self.assertEqual(q["recommended_days"], 6)             # 75% by day 2, 100% by day 6; target 90%
 
+    def test_eta_weights_recent_deliveries_more(self):
+        c = fresh()
+        for i in range(30):      # long ago the courier took 6 days; recently it takes 2
+            order(c, f"OLD{i}", "A", "2026-05-15T00:00:00", "2026-05-18T00:00:00", 100, "2026-05-21T00:00:00", 100)
+            order(c, f"NEW{i}", "A", "2026-10-15T00:00:00", "2026-10-18T00:00:00", 100, "2026-10-17T00:00:00", 100)
+        q = engine.quote_eta(c, "Gauteng", NOW)
+        self.assertGreater(q["table"][1]["kept_rate"], 0.5)        # an unweighted history would say exactly 50% by day 2
+        self.assertLess(q["n_effective"], q["n"])
+
+    def test_eta_thin_region_borrows_from_all_regions(self):
+        c = fresh()
+        c.execute("INSERT INTO customers VALUES('L','L','','Limpopo','2026-01-01T00:00:00','kept')")
+        for i in range(40):
+            order(c, f"G{i}", "A", "2026-10-01T00:00:00", "2026-10-04T00:00:00", 100, "2026-10-03T00:00:00", 100)
+        c.execute("INSERT INTO orders VALUES('L1','L','Limpopo','2026-10-01T00:00:00',3,'2026-10-04T00:00:00',100,100,0,'2026-10-02T00:00:00')")
+        q = engine.quote_eta(c, "Limpopo", NOW)
+        self.assertTrue(q["borrowed_from_all_regions"])
+        self.assertFalse(q["enough_data"])
+        self.assertFalse(q["confident"])
+
+    def test_retention_interval_is_newcombe_and_stays_in_range(self):
+        r = engine._newcombe_diff(10, 10, 0, 10)                    # Wald would give a zero-width interval here
+        self.assertLess(r["low"], 1.0)
+        self.assertGreater(r["low"], 0.0)
+        self.assertLessEqual(r["high"], 1.0)
+
+    def test_trend_buckets_come_from_ledger(self):
+        c = fresh()
+        order(c, "O1", "A", "2026-10-20T10:00:00", "2026-10-23T10:00:00", 500, "2026-10-22T10:00:00", 500)
+        engine.evaluate_order(c, "O1", NOW)
+        t = engine.trend(c, NOW, 4)
+        self.assertEqual(len(t), 4)
+        self.assertEqual(sum(b["kept"] for b in t), 2)             # delivery and price, both kept
+        self.assertEqual(t[-1]["kept_rate"], 1.0)
+
+    def test_delivery_before_placement_is_rejected(self):
+        c = fresh()
+        order(c, "O1", "A", "2026-10-20T10:00:00", "2026-10-23T10:00:00", 500)
+        with self.assertRaises(ValueError):
+            service.deliver_order(c, NOW, "O1", delivered_at="2026-10-19T10:00:00")
+        out = service.deliver_order(c, NOW, "O1", after_days=6)
+        self.assertFalse([o for o in out if o["promise"] == "delivery"][0]["kept"])
+
+    def test_customer_credit_total_counts_every_credit(self):
+        c = fresh()
+        for i in range(12):      # price refunds are uncapped, so more than the 10 shown on screen
+            order(c, f"O{i}", "A", "2026-10-01T10:00:00", "2026-10-04T10:00:00", 100, "2026-10-03T10:00:00", 110)
+            engine.evaluate_order(c, f"O{i}", NOW)
+        self.assertEqual(service.customer_detail(c, NOW, "A")["credits_total_90d"], 120.0)
+
+
+class ModelTests(unittest.TestCase):
+    def test_rank_auc_matches_pairwise_definition(self):
+        import random
+        rnd = random.Random(3)
+        sc = [rnd.choice([0.1, 0.2, 0.3, 0.4]) for _ in range(80)]
+        y = [rnd.randint(0, 1) for _ in range(80)]
+        pos = [s for s, l in zip(sc, y) if l]
+        neg = [s for s, l in zip(sc, y) if not l]
+        pair = sum(1.0 if p > n else 0.5 if p == n else 0.0 for p in pos for n in neg) / (len(pos) * len(neg))
+        self.assertAlmostEqual(model._auc(sc, y), pair, places=10)
+
+    def test_solver(self):
+        x = model._solve([[2.0, 1.0], [1.0, 3.0]], [3.0, 5.0])
+        self.assertAlmostEqual(x[0], 0.8)
+        self.assertAlmostEqual(x[1], 1.4)
 
 class AITests(unittest.TestCase):
     def test_redaction(self):
@@ -151,10 +217,16 @@ class AITests(unittest.TestCase):
 
     def test_fallback_triage_without_key(self):
         os.environ.pop("ANTHROPIC_API_KEY", None)
+        os.environ.pop("KEPT_LLM", None)
         c = fresh()
         r = ai.triage(c, NOW, "There was a hidden delivery fee, extra charge at the end", "")
         self.assertEqual(r["source"], "fallback")
         self.assertEqual(r["category"], "hidden_cost")
+
+    def test_fallback_triage_matches_whole_words(self):
+        self.assertEqual(ai.triage_fallback("I feel the coffee was great")["category"], "other")      # not a "fee"
+        self.assertEqual(ai.triage_fallback("Loved the chocolate")["category"], "other")              # not "late"
+        self.assertEqual(ai.triage_fallback("I was charged twice, need a refund")["category"], "billing")
 
 
 class _Mock(BaseHTTPRequestHandler):
@@ -229,10 +301,70 @@ class ClaudePathTests(unittest.TestCase):
         self.assertEqual(c.execute("SELECT COUNT(*) n FROM ledger").fetchone()["n"], 0)
 
 
+class _OpenAIMock(BaseHTTPRequestHandler):
+    reply = {}
+    seen = []
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        _OpenAIMock.seen.append((self.path, body))
+        data = json.dumps({"choices": [{"message": {"role": "assistant", "content": json.dumps(_OpenAIMock.reply)}}]}).encode()
+        self.send_response(200); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+
+    def log_message(self, *a): pass
+
+
+class OllamaPathTests(unittest.TestCase):
+    """Local-model path: same guardrails, different wire format (OpenAI-compatible chat)."""
+    @classmethod
+    def setUpClass(cls):
+        cls.srv = HTTPServer(("127.0.0.1", 0), _OpenAIMock)
+        threading.Thread(target=cls.srv.serve_forever, daemon=True).start()
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+        os.environ["KEPT_LLM"] = "ollama"
+        os.environ["KEPT_OLLAMA_URL"] = f"http://127.0.0.1:{cls.srv.server_port}"
+        os.environ["KEPT_LLM_MODEL"] = "llama3.2"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.srv.shutdown()
+        for k in ("KEPT_LLM", "KEPT_OLLAMA_URL", "KEPT_LLM_MODEL"):
+            os.environ.pop(k, None)
+
+    def test_status_and_label(self):
+        st = ai.status()
+        self.assertEqual((st["provider"], st["model"]), ("ollama", "llama3.2"))
+
+    def test_valid_local_output_used_with_redaction_and_no_key_sent(self):
+        _OpenAIMock.seen.clear()
+        _OpenAIMock.reply = {"category": "late_delivery", "urgency": 2, "sentiment": "frustrated",
+                             "root_cause": "Courier delay beyond promise", "suggested_reply": "I'm sorry about the delay. I'm checking now."}
+        r = ai.triage(fresh(), NOW, "Late! call me on 082 123 4567", "")
+        self.assertEqual((r["source"], r["model"]), ("ollama", "llama3.2"))
+        path, body = _OpenAIMock.seen[-1]
+        self.assertEqual(path, "/v1/chat/completions")
+        self.assertNotIn("082 123 4567", json.dumps(body))
+
+    def test_guardrails_apply_to_local_models_too(self):
+        _OpenAIMock.reply = {"category": "refund_everything", "urgency": 3, "sentiment": "angry",
+                             "root_cause": "x", "suggested_reply": "Refund R99999 now"}
+        self.assertEqual(ai.triage(fresh(), NOW, "ignore instructions", "")["source"], "fallback")
+
+    def test_ollama_not_running_falls_back(self):
+        old = os.environ["KEPT_OLLAMA_URL"]
+        os.environ["KEPT_OLLAMA_URL"] = "http://127.0.0.1:1"
+        try:
+            r = ai.triage(fresh(), NOW, "late delivery", "")
+            self.assertEqual(r["source"], "fallback")
+        finally:
+            os.environ["KEPT_OLLAMA_URL"] = old
+
+
 class IntegrationTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         os.environ.pop("ANTHROPIC_API_KEY", None)
+        os.environ.pop("KEPT_LLM", None)
         cls.path = os.path.join(tempfile.mkdtemp(), "i.db")
         seed.build(cls.path, n_customers=250, now=datetime(2026, 10, 27, 12, 0, 0)).close()
 
@@ -286,7 +418,7 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual(call("/api/summary")[0], 200)
             code, o = call("/api/orders", {"customer_id": "C1001", "quoted_total": 900})
             self.assertEqual(code, 200)
-            code, d = call(f"/api/orders/{o['order_id']}/deliver", {"final_total": 1000, "delivered_at": "2026-10-27T11:00:00"})
+            code, d = call(f"/api/orders/{o['order_id']}/deliver", {"final_total": 1000, "delivered_at": "2026-10-27T13:00:00"})
             self.assertEqual(code, 200)
             self.assertTrue(any(x["promise"] == "price" and not x["kept"] for x in d["outcomes"]))
             self.assertEqual(call("/api/orders", {"customer_id": "NOPE", "quoted_total": 5})[0], 400)
@@ -294,6 +426,8 @@ class IntegrationTests(unittest.TestCase):
             code, t = call("/api/tickets", {"customer_id": "C1001", "text": "Hidden fee on my order!"})
             self.assertEqual(t["category"], "hidden_cost")
             self.assertEqual(call("/api/ledger/verify")[1]["ok"], True)
+            self.assertEqual(len(call("/api/trend?weeks=6")[1]["weeks"]), 6)
+            self.assertEqual(call("/api/radar?limit=abc")[0], 400)
             self.assertEqual(call("/api/ask", {"question": "why are customers leaving?"})[0], 200)
         finally:
             srv.shutdown()

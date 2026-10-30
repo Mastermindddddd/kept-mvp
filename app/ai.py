@@ -1,4 +1,4 @@
-"""AI layer: Claude for language tasks, with guardrails and a deterministic fallback.
+"""AI layer: Claude (default), Ollama (local, free) or any OpenAI-compatible API, with guardrails and a deterministic fallback.
 
 Design rules (each is tested in tests/):
   * Private data is redacted before anything is sent (emails, phone numbers, ID numbers; customers are
@@ -19,6 +19,8 @@ from .db import iso
 
 API_BASE = os.environ.get("KEPT_API_BASE", "https://api.anthropic.com")
 MODEL = os.environ.get("KEPT_MODEL", "claude-sonnet-5-5")
+OLLAMA_DEFAULT_URL = "http://127.0.0.1:11434"
+OLLAMA_DEFAULT_MODEL = "llama3.2"
 CATEGORIES = ["late_delivery", "hidden_cost", "billing", "product_issue", "support_delay", "other"]
 
 
@@ -26,13 +28,42 @@ class AIError(Exception):
     pass
 
 
+def provider():
+    """Which language model answers. KEPT_LLM = anthropic | ollama | openai; default: Claude if a key is set."""
+    p = os.environ.get("KEPT_LLM", "").strip().lower()
+    if p in ("anthropic", "claude"):
+        return "anthropic" if os.environ.get("ANTHROPIC_API_KEY") else None
+    if p == "ollama":
+        return "ollama"
+    if p in ("openai", "openai-compatible"):
+        return "openai" if os.environ.get("KEPT_LLM_BASE_URL") else None
+    return "anthropic" if os.environ.get("ANTHROPIC_API_KEY") else None
+
+
+def model_name():
+    p = provider()
+    if p == "anthropic":
+        return MODEL
+    if p == "ollama":
+        return os.environ.get("KEPT_LLM_MODEL") or os.environ.get("KEPT_OLLAMA_MODEL") or OLLAMA_DEFAULT_MODEL
+    if p == "openai":
+        return os.environ.get("KEPT_LLM_MODEL", "")
+    return None
+
+
 def configured():
-    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+    return provider() is not None
+
+
+def source_label():
+    return {"anthropic": "claude", "ollama": "ollama", "openai": "openai"}.get(provider(), "fallback")
 
 
 def status():
-    return {"configured": configured(), "model": MODEL if configured() else None,
-            "mode": "claude" if configured() else "fallback (set ANTHROPIC_API_KEY to enable Claude)"}
+    p = provider()
+    names = {"anthropic": "Claude", "ollama": "Ollama (local)", "openai": "OpenAI-compatible API"}
+    return {"configured": p is not None, "provider": p, "model": model_name(),
+            "mode": f"{names[p]}: {model_name()}" if p else "fallback (no AI configured; see README)"}
 
 
 # ------------------------------------------------------------ safety helpers
@@ -79,21 +110,51 @@ def _json_from(text):
         raise AIError(f"bad JSON: {e}")
 
 
+def _post(url, body, headers, timeout):
+    req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+                                 headers=dict(headers, **{"content-type": "application/json"}))
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.loads(r.read())
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as e:
+        raise AIError(f"API call failed: {e}")
+
+
 def call_claude(system, user, max_tokens=500):
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         raise AIError("no API key")
-    body = json.dumps({"model": MODEL, "max_tokens": max_tokens, "system": system,
-                       "messages": [{"role": "user", "content": user}]}).encode()
-    req = urllib.request.Request(API_BASE.rstrip("/") + "/v1/messages", data=body, method="POST",
-                                 headers={"x-api-key": key, "anthropic-version": "2023-06-01",
-                                          "content-type": "application/json"})
+    data = _post(API_BASE.rstrip("/") + "/v1/messages",
+                 {"model": MODEL, "max_tokens": max_tokens, "system": system,
+                  "messages": [{"role": "user", "content": user}]},
+                 {"x-api-key": key, "anthropic-version": "2023-06-01"}, 30)
+    return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+
+
+def call_openai_compatible(base, model, key, system, user, max_tokens, timeout):
+    """Ollama and most hosted providers speak this chat format (POST {base}/v1/chat/completions)."""
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
+    data = _post(base.rstrip("/") + "/v1/chat/completions",
+                 {"model": model, "max_tokens": max_tokens, "temperature": 0.2,
+                  "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]},
+                 headers, timeout)
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            data = json.loads(r.read())
-        return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as e:
-        raise AIError(f"API call failed: {e}")
+        return data["choices"][0]["message"]["content"] or ""
+    except (KeyError, IndexError, TypeError):
+        raise AIError("unexpected reply format from the model server")
+
+
+def call_llm(system, user, max_tokens=500):
+    p = provider()
+    if p == "anthropic":
+        return call_claude(system, user, max_tokens)
+    if p == "ollama":      # local, no key; first call can be slow while the model loads
+        return call_openai_compatible(os.environ.get("KEPT_OLLAMA_URL", OLLAMA_DEFAULT_URL), model_name(), "",
+                                      system, user, max_tokens, 120)
+    if p == "openai":
+        return call_openai_compatible(os.environ["KEPT_LLM_BASE_URL"], model_name(), os.environ.get("KEPT_LLM_API_KEY", ""),
+                                      system, user, max_tokens, 60)
+    raise AIError("no AI provider configured")
 
 
 def _log(conn, ts, feature, source, prompt, output, note=""):
@@ -107,14 +168,14 @@ def _run(conn, ts, feature, system, user, validate, fallback, max_tokens=500):
     note = ""
     if configured():
         try:
-            out = validate(call_claude(system, user, max_tokens))
-            out.update(source="claude", note="")
-            _log(conn, ts, feature, "claude", user, out)
+            out = validate(call_llm(system, user, max_tokens))
+            out.update(source=source_label(), model=model_name(), note="")
+            _log(conn, ts, feature, source_label(), user, out)
             return out
         except AIError as e:
-            note = f"Claude output rejected or unavailable: {e}"
+            note = f"{status()['mode']} output rejected or unavailable: {e}"
     else:
-        note = "No ANTHROPIC_API_KEY set; used rule-based fallback."
+        note = "No AI provider configured; used rule-based fallback."
     out = fallback()
     out.update(source="fallback", note=note)
     _log(conn, ts, feature, "fallback", user, out, note)
@@ -158,14 +219,20 @@ _REPLY = {
 }
 
 
+_KW_RX = [(c, [re.compile(r"\b" + re.escape(k) + r"\b") for k in kws]) for c, kws in _KW]
+_ANGRY = re.compile(r"\b(unacceptable|disgusting|scam|fed up|worst|never again|furious|ridiculous)\b|!!")
+
+
 def triage_fallback(text):
+    """Score every category by whole-word keyword hits (so "feel" is not a "fee" and "chocolate" is not "late");
+    the most hits wins and ties go to the earlier, more specific category."""
     low = (text or "").lower()
-    cat = "other"
-    for c, kws in _KW:
-        if any(k in low for k in kws):
-            cat = c
-            break
-    angry = any(w in low for w in ["unacceptable", "disgusting", "scam", "fed up", "worst", "never again", "furious", "!!"])
+    best, cat = 0, "other"
+    for c, rxs in _KW_RX:
+        hits = sum(1 for rx in rxs if rx.search(low))
+        if hits > best:
+            best, cat = hits, c
+    angry = bool(_ANGRY.search(low))
     urg = 3 if angry or "cancel" in low else 2 if cat in ("late_delivery", "hidden_cost", "billing") else 1
     return {"category": cat, "urgency": urg, "sentiment": "angry" if angry else "frustrated" if cat != "other" else "neutral",
             "root_cause": _CAUSE[cat], "suggested_reply": _REPLY[cat]}

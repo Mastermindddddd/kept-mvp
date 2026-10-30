@@ -18,13 +18,14 @@ Loyalty is measured **without relying on discounts**: the headline metric is dis
 | Promise engine | Judges delivery, price and reply promises; pays credits; enforces a per-customer cap; refunds surprise charges in full; holdout customers are measured but never paid | `app/engine.py` |
 | Proactive detection | A background sweep finds overdue orders and unanswered tickets before the customer complains | `engine.sweep` |
 | Ledger | SHA-256 hash chain; editing or deleting any past row is detected and reported | `app/ledger.py` |
-| Honest ETA | Recommends the smallest delivery promise that history says will be kept 90% of the time, per region, with expected credit cost | `engine.quote_eta` |
-| Friction model | Logistic regression trained in pure Python on the database's own history, 5-fold cross-validated against a "days since last order" baseline | `app/model.py` |
-| AI (Claude) | Ticket triage and reply drafts, proactive recovery messages, and "ask your data" | `app/ai.py` |
-| Retention measurement | Discount-free retention, Kept vs holdout, with a confidence interval and a small-sample warning; repeat-contact rate; a credit-cost vs margin check | `engine.retention` |
+| Honest ETA | Recommends the smallest delivery promise that history says will be kept 90% of the time, per region, with expected credit cost. Recent deliveries weigh more (60-day half-life); a region with thin history is blended with all regions and flagged as low confidence | `engine.quote_eta` |
+| Friction model | Logistic regression trained in pure Python (Newton/IRLS, L2 penalty, log-scaled counts) on the database's own history, 5-fold cross-validated against a "days since last order" baseline. A signal is only shown as a reason when it actually happened | `app/model.py` |
+| AI (Claude, Ollama or any OpenAI-compatible API) | Ticket triage and reply drafts, proactive recovery messages, and "ask your data". Optional; rule-based fallback otherwise | `app/ai.py` |
+| Retention measurement | Discount-free retention, Kept vs holdout, with a Newcombe score confidence interval (sound for small groups) and a small-sample warning; repeat-contact rate; a credit-cost vs margin check | `engine.retention` |
 | Service desk | Queue ordered by overdue, then earned tier, then urgency | `service.list_tickets` |
 | CSV import | Bring real orders and tickets; historic data is judged and credited | `service.import_*` |
-| Web app + JSON API | Seven views and 20 routes | `app/static/index.html`, `app/server.py` |
+| Web app + JSON API | Seven views (weekly trend chart, live promise demo, ledger chain check, light/dark themes, works on phones) and about 20 routes | `app/static/index.html`, `app/server.py` |
+| Shop widget sample | A scorecard badge and a checkout delivery promise on a stand-in shop page, using two public endpoints | `samples/shop-widget.html` |
 
 ### How the AI is kept safe
 - Emails, phone numbers and ID/card numbers are redacted before text leaves the server; customers are sent as ids, never names.
@@ -43,18 +44,29 @@ python3 -m app.server
 
 Open http://127.0.0.1:8000. On first start it generates synthetic demo data (about 3 seconds).
 
-To use Claude, set a key before starting:
+### Choose an AI model (optional)
 
-```
-export ANTHROPIC_API_KEY=sk-ant-...        # optional; model via KEPT_MODEL (default claude-sonnet-5-5)
-python3 -m app.server
-```
+The AI features work with **no setup** using rule-based answers. To use a language model instead, pick one:
+
+| Option | How | Cost |
+| --- | --- | --- |
+| **Claude** | `export ANTHROPIC_API_KEY=sk-ant-...` (model via `KEPT_MODEL`, default `claude-sonnet-5-5`) | Paid API credits |
+| **Ollama (local, free, offline)** | Install [Ollama](https://ollama.com), run `ollama pull llama3.2`, then `KEPT_LLM=ollama python3 -m app.server` | Free; needs a laptop with a few GB of free memory |
+| **Any OpenAI-compatible API** | `KEPT_LLM=openai KEPT_LLM_BASE_URL=https://... KEPT_LLM_API_KEY=... KEPT_LLM_MODEL=...` | Depends on the provider |
+
+Ollama settings: `KEPT_OLLAMA_URL` (default `http://127.0.0.1:11434`) and `KEPT_LLM_MODEL` / `KEPT_OLLAMA_MODEL` (default `llama3.2`). `KEPT_LLM=anthropic|ollama|openai` forces a provider. The sidebar and the Data & AI page show which model is active, and every AI answer is labelled with the model that wrote it, or "rule-based fallback".
+
+Small local models follow the strict JSON format less reliably than Claude, so you will see "rule-based fallback" more often with them. That is the safety checks working, not a fault. Reviewers do not need Ollama or any key: the app runs fully without one.
 
 Other settings: `KEPT_HOST`, `KEPT_PORT`, `KEPT_DB` (database path), `KEPT_TOKEN` (if set, every API route except the public scorecard needs the header `X-Kept-Token`; the web app asks for it).
 
-Tests (26, standard library): `python3 -W ignore -m unittest discover -s tests`
+Tests (39, standard library): `python3 -W ignore -m unittest discover -s tests`
 
 To use your own data instead of the demo: `KEPT_DB=data/mine.db KEPT_NO_SEED=1 python3 -m app.server`, then use **Data & AI** to import orders first, then tickets (formats are shown on that page).
+
+## Samples
+
+`samples/` has sample CSVs, a 60-second terminal walkthrough (`python3 samples/walkthrough.py`) and a stand-in shop page that shows the scorecard badge and a checkout delivery promise. See `samples/README.md`.
 
 ## Suggested demo (5 minutes)
 1. **Overview** – promise record, delivery kept by region (Gauteng 90%, Limpopo 14% under a flat 3-day promise).
@@ -65,10 +77,11 @@ To use your own data instead of the demo: `KEPT_DB=data/mine.db KEPT_NO_SEED=1 p
 
 ## Known limitations (read before judging)
 - **The demo data is synthetic.** 700 invented customers simulated over 12 months. The effect of friction on lapsing and of credits on recovery is **built into the generator** (`app/seed.py`), so the retention gap and the model results show the pipeline working, **not** that Kept raises retention. The holdout in the demo is small (about 43 customers) and the app says so.
-- **On the synthetic data the friction model barely beats recency alone** (AUC 0.640 vs 0.635 among customers who still looked healthy). We report it as is. Whether friction signals flag churn earlier than recency is exactly what a pilot on real data must test.
-- **The Claude path was tested against a local stand-in for the Anthropic API, not the live service** (no API key was available while building). The request format follows the public Messages API; check it with your key. Without a key the rule-based fallback is used throughout.
+- **On the synthetic data the friction model barely beats recency alone** (AUC 0.648 vs 0.635 among customers who still looked healthy). We report it as is. Whether friction signals flag churn earlier than recency is exactly what a pilot on real data must test.
+- **The AI paths were tested against local stand-ins, not the live services**: one for the Anthropic Messages API and one for the OpenAI-compatible chat format that Ollama uses. No API key was available and Ollama was not installed while building. Run it once with your chosen model before relying on it. With no model configured the rule-based fallback is used throughout.
 - **The ledger proves tampering only if its head hash is published outside the business.** Someone who controls the database could rebuild the whole chain. The scorecard shows the head hash for this purpose; third-party anchoring is not built.
 - **No integrations** with Shopify, couriers or helpdesks, no user accounts or roles (only an optional shared token), single-process SQLite. Not production-hardened.
+- **The shop widget is a sample, not a plugin.** There is no Shopify or WooCommerce plugin, and the widget reads only the public scorecard and delivery-window endpoints.
 - **No customer-facing messaging**: drafts are shown to staff, nothing is sent.
 - **No legal or POPIA review.** Personal data handling here (redaction, no customer-visible scores) is a design intention, not compliance.
 - Ledger timestamps for imported history are the event times, so they are not strictly increasing; the chain order is the sequence number.

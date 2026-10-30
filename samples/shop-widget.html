@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Kept shop widget sample</title>
+<style>
+body{font:16px/1.5 system-ui,sans-serif;max-width:640px;margin:32px auto;padding:0 16px;color:#0F1E1A}
+.product{border:1px solid #D0DAD6;border-radius:12px;padding:20px;margin-bottom:20px}
+.kept-badge{display:inline-flex;gap:10px;align-items:center;border:1px solid #0A6E5A;background:#D3EBE3;border-radius:10px;padding:8px 12px;font-size:14px}
+.kept-badge b{font-size:20px;color:#0A6E5A}.kept-promise{margin-top:12px;font-size:14px;color:#4B5D57}
+select,button{font:inherit;padding:6px 10px}
+</style></head><body>
+<h1>Sample shop page</h1>
+<p>This page is a stand-in for any online shop. It uses two public endpoints of a running Kept server, so the shopper sees real, current numbers. Paste the same snippet into a Shopify, WooCommerce or plain HTML theme.</p>
+
+<div class="product">
+  <h2>Cotton work jacket - R899</h2>
+  <!-- Kept badge: the shop's verified record, computed from the ledger -->
+  <div id="kept-badge" class="kept-badge">Loading record...</div>
+  <p>Deliver to:
+    <select id="kept-region"><option>Gauteng</option><option>Western Cape</option><option>KwaZulu-Natal</option><option>Eastern Cape</option><option>Limpopo</option></select></p>
+  <!-- Kept promise: a delivery window quoted from this shop's own history -->
+  <div id="kept-promise" class="kept-promise"></div>
+  <button>Add to cart</button>
+</div>
+
+<script>
+// Change this to wherever your Kept server runs. Both endpoints are public and read-only.
+const KEPT = "http://127.0.0.1:8000";
+async function badge() {
+  const el = document.getElementById("kept-badge");
+  try {
+    const s = await (await fetch(KEPT + "/api/scorecard")).json();
+    const pct = s.overall_kept_rate == null ? "n/a" : Math.round(s.overall_kept_rate * 100) + "%";
+    el.innerHTML = `<b>${pct}</b><span>of promises kept in the last ${s.window_days} days (${s.judged.toLocaleString()} checked).<br>` +
+      `Record ${s.ledger.ok ? "verified" : "NOT VERIFIED"} · ledger ${s.ledger.head.slice(0, 10)}...</span>`;
+  } catch (e) { el.textContent = "Record unavailable (is the Kept server running?)"; }
+}
+async function promise() {
+  const region = document.getElementById("kept-region").value, el = document.getElementById("kept-promise");
+  try {
+    const q = await (await fetch(KEPT + "/api/eta?region=" + encodeURIComponent(region))).json();
+    el.textContent = q.n ? `Arrives within ${q.recommended_days} days to ${region}, or we credit you automatically.` : "No delivery history for this region yet.";
+  } catch (e) { el.textContent = ""; }
+}
+document.getElementById("kept-region").onchange = promise;
+badge(); promise();
+</script>
+</body></html>

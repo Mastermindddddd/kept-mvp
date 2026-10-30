@@ -191,35 +191,97 @@ def sweep(conn, now):
 
 # --------------------------------------------------------------- tiers
 
+TIER_THRESHOLDS = (("Priority", 6), ("Regular", 3), ("Member", 0))
+
+
+def _tier_for_count(n):
+    return next(name for name, need in TIER_THRESHOLDS if n >= need)
+
+
 def tier_of(conn, customer_id, now):
     """Earned SERVICE tier (faster, more personal service). Everyone keeps the same promises."""
     n = conn.execute("SELECT COUNT(*) n FROM orders WHERE customer_id=? AND placed_at>=?",
                      (customer_id, iso(add_days(now, -365)))).fetchone()["n"]
-    return "Priority" if n >= 6 else "Regular" if n >= 3 else "Member"
+    return _tier_for_count(n)
+
+
+def tiers(conn, now):
+    """Every customer's tier in one query (the queue and radar would otherwise run one query per row)."""
+    counts = {r["customer_id"]: r["n"] for r in conn.execute(
+        "SELECT customer_id, COUNT(*) n FROM orders WHERE placed_at>=? GROUP BY customer_id", (iso(add_days(now, -365)),))}
+    return lambda cid: _tier_for_count(counts.get(cid, 0))
 
 
 # ----------------------------------------------------------------- ETA
 
+ETA_HALF_LIFE_DAYS = 60      # a delivery 60 days old counts half as much as one today
+ETA_PRIOR_WEIGHT = 10        # pseudo-deliveries borrowed from all regions, so a thin region is not quoted on noise
+
+
+def _delivery_history(conn, now, window_days, region=None):
+    q = "SELECT placed_at, delivered_at, quoted_total FROM orders WHERE delivered_at IS NOT NULL AND placed_at>=?"
+    args = [iso(add_days(now, -window_days))]
+    if region is not None:
+        q += " AND region=?"
+        args.append(region)
+    out = []
+    for r in conn.execute(q, args):
+        placed = parse(r["placed_at"])
+        age = max(0.0, days(placed, now))
+        out.append((days(placed, parse(r["delivered_at"])), 0.5 ** (age / ETA_HALF_LIFE_DAYS), r["quoted_total"]))
+    return out
+
+
+def _weighted_rate(hist, k):
+    tot = sum(w for _, w, _ in hist)
+    return sum(w for d, w, _ in hist if d <= k) / tot if tot else None
+
+
+def _wilson_low(p, n, z=1.645):
+    """One-sided 95% lower bound for a kept rate p observed on n (effective) deliveries."""
+    if not n:
+        return 0.0
+    den = 1 + z * z / n
+    mid = p + z * z / (2 * n)
+    return max(0.0, (mid - z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / den)
+
+
 def quote_eta(conn, region, now, window_days=180):
+    """Smallest promise (in days) this region's recent history says will be kept at the target rate.
+
+    Recent deliveries weigh more (half-life ETA_HALF_LIFE_DAYS), because courier performance drifts. A region with
+    little history is shrunk towards the all-region rate instead of being quoted on a handful of orders.
+    """
     cfg = get_config(conn)
-    rows = conn.execute("SELECT placed_at, delivered_at, quoted_total FROM orders WHERE region=? AND delivered_at IS NOT NULL AND placed_at>=?",
-                        (region, iso(add_days(now, -window_days)))).fetchall()
-    d = sorted(days(parse(r["placed_at"]), parse(r["delivered_at"])) for r in rows)
-    n = len(d)
+    hist = _delivery_history(conn, now, window_days, region)
+    n = len(hist)
     if n == 0:
         return {"region": region, "n": 0, "enough_data": False}
+    pooled = _delivery_history(conn, now, window_days)
+    w_sum = sum(w for _, w, _ in hist)
+    n_eff = w_sum ** 2 / sum(w * w for _, w, _ in hist)     # Kish effective sample size of the weighted history
+    d = sorted(x for x, _, _ in hist)
+
     def pct(p):
         return d[min(n - 1, int(math.ceil(p * n)) - 1)]
-    avg_total = sum(r["quoted_total"] for r in rows) / n
-    avg_credit = min(avg_total * cfg["delivery"]["credit_pct"] / 100.0, cfg["delivery"]["max_credit"])
+    rate_c, cap = cfg["delivery"]["credit_pct"] / 100.0, cfg["delivery"]["max_credit"]
+    avg_credit = sum(min(t * rate_c, cap) for _, _, t in hist) / n          # per order, so the cap bites correctly
+    target = cfg["target_kept_rate"]
+    prior = ETA_PRIOR_WEIGHT if n_eff < 60 else 0
     table = []
     for k in range(1, 15):
-        rate = sum(1 for x in d if x <= k) / n
+        local = _weighted_rate(hist, k)
+        rate = (local * n_eff + _weighted_rate(pooled, k) * prior) / (n_eff + prior) if prior else local
         table.append({"promise_days": k, "kept_rate": round(rate, 3),
+                      "kept_rate_low": round(_wilson_low(rate, n_eff + prior), 3),
                       "expected_credit_per_order": round((1 - rate) * avg_credit, 2)})
-    rec = next((t["promise_days"] for t in table if t["kept_rate"] >= cfg["target_kept_rate"]), 14)
-    return {"region": region, "n": n, "enough_data": n >= 20, "p50": round(pct(.5), 2), "p80": round(pct(.8), 2),
-            "p95": round(pct(.95), 2), "recommended_days": rec, "target": cfg["target_kept_rate"], "table": table}
+    hit = next((t for t in table if t["kept_rate"] >= target), None)
+    return {"region": region, "n": n, "n_effective": round(n_eff, 1), "enough_data": n >= 20,
+            "borrowed_from_all_regions": bool(prior),
+            "p50": round(pct(.5), 2), "p80": round(pct(.8), 2), "p95": round(pct(.95), 2),
+            "recommended_days": hit["promise_days"] if hit else 14, "target_reachable": hit is not None,
+            "confident": bool(hit) and hit["kept_rate_low"] >= target - 0.05,
+            "target": target, "table": table}
 
 
 def regions(conn):
@@ -258,15 +320,47 @@ def scorecard(conn, now, window=90):
             "ledger": {"ok": v["ok"], "entries": v["count"], "head": v["head"]}}
 
 
+def trend(conn, now, weeks=12):
+    """Weekly kept rate from the ledger (holdout excluded), oldest week first."""
+    start = add_days(now, -7 * weeks)
+    buckets = [{"week_start": iso(add_days(start, 7 * i))[:10], "kept": 0, "broken": 0, "credits": 0.0} for i in range(weeks)]
+    for r in conn.execute("SELECT ts, kind, payload FROM ledger WHERE ts>=? AND ts<=? AND kind IN "
+                          "('promise_kept','promise_broken','credit_issued')", (iso(start), iso(now))):
+        i = min(weeks - 1, int(days(start, parse(r["ts"])) // 7))
+        p = json.loads(r["payload"])
+        if r["kind"] == "credit_issued":
+            buckets[i]["credits"] += p["amount"]
+        elif not p.get("holdout"):
+            buckets[i]["kept" if r["kind"] == "promise_kept" else "broken"] += 1
+    for b in buckets:
+        tot = b["kept"] + b["broken"]
+        b["kept_rate"] = round(b["kept"] / tot, 4) if tot else None
+        b["credits"] = round(b["credits"], 2)
+    return buckets
+
+
 # ------------------------------------------------------------- retention
 
-def _wilson_diff(k1, n1, k2, n2):
+def _wilson(k, n, z=1.96):
+    p = k / n
+    den = 1 + z * z / n
+    mid = (p + z * z / (2 * n)) / den
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / den
+    return mid - half, mid + half
+
+
+def _newcombe_diff(k1, n1, k2, n2, z=1.96):
+    """95% interval for p1 - p2 (Newcombe's hybrid score method). Unlike the plain Wald interval it stays
+    sensible for small groups and rates near 0 or 1, which matters for a holdout of a few dozen customers."""
     if not n1 or not n2:
         return None
     p1, p2 = k1 / n1, k2 / n2
-    se = math.sqrt(p1 * (1 - p1) / n1 + p2 * (1 - p2) / n2)
+    l1, u1 = _wilson(k1, n1, z)
+    l2, u2 = _wilson(k2, n2, z)
     d = p1 - p2
-    return {"diff": round(d, 4), "low": round(d - 1.96 * se, 4), "high": round(d + 1.96 * se, 4)}
+    low = d - math.sqrt((p1 - l1) ** 2 + (u2 - p2) ** 2)
+    high = d + math.sqrt((u1 - p1) ** 2 + (p2 - l2) ** 2)
+    return {"diff": round(d, 4), "low": round(low, 4), "high": round(high, 4), "method": "Newcombe hybrid score"}
 
 
 def retention(conn, now):
@@ -278,13 +372,16 @@ def retention(conn, now):
                              GROUP BY c.id HAVING f>=? AND f<?""", (lo, hi)).fetchall()
     stats = {"kept": dict(n=0, retained=0, discount_free=0, coupon_bought=0),
              "holdout": dict(n=0, retained=0, discount_free=0, coupon_bought=0)}
+    recent_orders = {}
+    for r in conn.execute("SELECT customer_id, discount FROM orders WHERE placed_at>=?", (recent,)):
+        recent_orders.setdefault(r["customer_id"], []).append(r["discount"] or 0)
     for c in firsts:
         s = stats[c["grp"]]
         s["n"] += 1
-        rows = conn.execute("SELECT discount FROM orders WHERE customer_id=? AND placed_at>=?", (c["id"], recent)).fetchall()
+        rows = recent_orders.get(c["id"])
         if rows:
             s["retained"] += 1
-            if any((r["discount"] or 0) <= 0 for r in rows):
+            if any(x <= 0 for x in rows):
                 s["discount_free"] += 1
             else:
                 s["coupon_bought"] += 1
@@ -293,7 +390,7 @@ def retention(conn, now):
         s["discount_free_retention"] = round(s["discount_free"] / s["n"], 4) if s["n"] else None
     k, h = stats["kept"], stats["holdout"]
     return {"cohort_window": [lo, hi], "retained_window_days": 90, "groups": stats,
-            "difference_discount_free": _wilson_diff(k["discount_free"], k["n"], h["discount_free"], h["n"]),
+            "difference_discount_free": _newcombe_diff(k["discount_free"], k["n"], h["discount_free"], h["n"]),
             "small_sample": min(k["n"], h["n"]) < 100}
 
 

@@ -57,14 +57,22 @@ def create_order(conn, now, d):
     return {"order_id": oid, "promised_days": pdays, "promised_at": iso(add_days(now, pdays))}
 
 
-def deliver_order(conn, now, oid, final_total=None, delivered_at=None):
+def deliver_order(conn, now, oid, final_total=None, delivered_at=None, after_days=None):
     o = conn.execute("SELECT * FROM orders WHERE id=?", (oid,)).fetchone()
     if not o:
         raise KeyError("order not found")
     if o["delivered_at"]:
         raise ValueError("order already delivered")
-    when = parse(delivered_at) if delivered_at else now
+    placed = parse(o["placed_at"])
+    if after_days not in (None, ""):
+        when = add_days(placed, float(after_days))
+    else:
+        when = parse(delivered_at) if delivered_at else now
+    if when < placed:
+        raise ValueError("delivery cannot be before the order was placed")
     final = float(final_total) if final_total not in (None, "") else o["quoted_total"]
+    if final < 0:
+        raise ValueError("final_total cannot be negative")
     conn.execute("UPDATE orders SET delivered_at=?, final_total=? WHERE id=?", (iso(when), final, oid))
     conn.commit()
     return engine.evaluate_order(conn, oid, max(now, when))
@@ -124,13 +132,15 @@ def resolve_ticket(conn, now, tid):
 
 def list_tickets(conn, now, status="open", limit=40):
     cfg = engine.get_config(conn)
+    tier_of = engine.tiers(conn, now)
     q = "SELECT t.*, c.name, c.grp FROM tickets t JOIN customers c ON c.id=t.customer_id"
     q += " WHERE t.resolved_at IS NULL" if status == "open" else ""
-    rows = conn.execute(q + " ORDER BY t.created_at DESC LIMIT 400").fetchall()
+    # unanswered tickets first, so an old unanswered one is never cut off by the row limit
+    rows = conn.execute(q + " ORDER BY (t.first_reply_at IS NOT NULL), t.created_at DESC LIMIT 400").fetchall()
     out = []
     for t in rows:
         due = engine.ticket_due(t, cfg)
-        tier = engine.tier_of(conn, t["customer_id"], now)
+        tier = tier_of(t["customer_id"])
         out.append({"id": t["id"], "customer_id": t["customer_id"], "name": t["name"], "tier": tier,
                     "order_id": t["order_id"], "created_at": t["created_at"], "text": t["text"],
                     "category": t["category"], "urgency": t["urgency"], "sentiment": t["sentiment"],
@@ -159,7 +169,8 @@ def customer_detail(conn, now, cid):
     return {"customer": dict(c), "tier": tier, "orders_12m": n12,
             "next_tier": {"name": nxt[0], "orders_needed": max(0, nxt[1] - n12)} if nxt else None,
             "orders": orders, "credits": credits, "tickets": tickets,
-            "credits_total_90d": round(sum(x["amount"] for x in credits if x["ts"] >= iso(add_days(now, -90))), 2),
+            "credits_total_90d": round(conn.execute("SELECT COALESCE(SUM(amount),0) s FROM credits WHERE customer_id=? AND ts>=?",
+                                                    (cid, iso(add_days(now, -90)))).fetchone()["s"], 2),
             "reorder_from": dict(last) if last else None}
 
 
@@ -209,6 +220,8 @@ def import_orders(conn, now, text):
             if promised < placed:
                 raise ValueError("promised_at before placed_at")
             quoted = float(r["quoted_total"])
+            if quoted <= 0:
+                raise ValueError("quoted_total must be positive")
             if conn.execute("SELECT 1 FROM orders WHERE id=?", (oid,)).fetchone():
                 raise ValueError("duplicate order_id")
             region = (r.get("region") or "Unknown").strip() or "Unknown"
@@ -274,7 +287,7 @@ def summary(conn, now):
     engine.sweep(conn, now)
     radar = model.score_all(conn, now, limit=5)
     counts = {t: conn.execute(f"SELECT COUNT(*) n FROM {t}").fetchone()["n"] for t in ("customers", "orders", "tickets", "credits")}
-    return {"now": iso(now), "counts": counts, "scorecard": engine.scorecard(conn, now), "retention": engine.retention(conn, now),
+    return {"now": iso(now), "target": engine.get_config(conn)["target_kept_rate"], "counts": counts, "scorecard": engine.scorecard(conn, now), "trend": engine.trend(conn, now), "retention": engine.retention(conn, now),
             "operations": engine.operations_metrics(conn, now), "regions": region_kept(conn, now),
             "radar": {"scored": radar.get("scored", 0), "total_value_at_risk": radar.get("total_value_at_risk", 0),
                       "model": radar.get("model")},
